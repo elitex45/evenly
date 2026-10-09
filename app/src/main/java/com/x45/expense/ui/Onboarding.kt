@@ -68,7 +68,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Promise(next: () -> U
     Text("₹", style = Type.Hero.copy(fontSize = 72.sp, color = Ink.Gold))
     Text("Your spending,\nwritten down\nfor you.", style = Type.Hero.copy(fontSize = 42.sp, lineHeight = 48.sp))
     Spacer(Modifier.height(20.dp))
-    Text("You pay. Your bank texts you. Autolog reads that text and notes it down. You never type a thing.", style = Type.Body.copy(color = Ink.Muted))
+    Text("You pay. Your bank texts you. Evenly reads that text and notes it down. You never type a thing.", style = Type.Body.copy(color = Ink.Muted))
     Spacer(Modifier.height(28.dp))
     listOf(
         "📩" to "Reads bank texts from ${com.x45.expense.sms.Banks.count}+ banks & cards",

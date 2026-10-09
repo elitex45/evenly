@@ -71,6 +71,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.x45.expense.cloud.Cloud
 import com.x45.expense.data.Db
 import com.x45.expense.data.Places
 import com.x45.expense.ui.AccountsScreen
@@ -79,6 +80,8 @@ import com.x45.expense.ui.BudgetsScreen
 import com.x45.expense.ui.CategoriesScreen
 import com.x45.expense.ui.DetailScreen
 import com.x45.expense.ui.GoldButton
+import com.x45.expense.ui.GroupScreen
+import com.x45.expense.ui.GroupsScreen
 import com.x45.expense.ui.Glyph
 import com.x45.expense.ui.HomeScreen
 import com.x45.expense.ui.InsightsScreen
@@ -123,20 +126,24 @@ class MainActivity : FragmentActivity() {
         }
         Notify.channels(this)
         Notify.scheduleDaily(this)
-        openRequest.value = intent?.getStringExtra(Notify.EXTRA_OPEN)
+        openRequest.value = request(intent)
         setContent { SpendsTheme { App(this) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        openRequest.value = intent.getStringExtra(Notify.EXTRA_OPEN)
+        openRequest.value = request(intent)
     }
+
+    /** What a notification tap or an invite link (evenly://join/CODE) wants to open. */
+    private fun request(i: Intent?): String? =
+        i?.getStringExtra(Notify.EXTRA_OPEN) ?: i?.data?.takeIf { it.scheme == "evenly" && it.host == "join" }?.lastPathSegment?.let { "join:$it" }
 
     fun unlock(onOk: () -> Unit) {
         BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onOk()
         }).authenticate(
-            BiometricPrompt.PromptInfo.Builder().setTitle("Unlock Autolog").setAllowedAuthenticators(LOCK_AUTH).build()
+            BiometricPrompt.PromptInfo.Builder().setTitle("Unlock Evenly").setAllowedAuthenticators(LOCK_AUTH).build()
         )
     }
 }
@@ -170,15 +177,23 @@ fun App(activity: MainActivity) {
     var locked by remember { mutableStateOf(db.setting("lock") == "1") }
     var leftAt by remember { mutableStateOf(0L) }
 
+    // Groups: sync when the app opens, then every 15 s while it's on screen, so friends' shares show up.
+    var resumed by remember { mutableStateOf(true) }
+    LaunchedEffect(resumed) {
+        while (resumed) { delay(15_000); if (Cloud.signedIn(db) && !Cloud.syncing) Cloud.syncAsync(db) }
+    }
+
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
                 Lifecycle.Event.ON_RESUME -> {
                     perms = readPerms()
+                    resumed = true
+                    Cloud.syncAsync(db)
                     if (db.setting("lock") == "1" && leftAt > 0 && SystemClock.elapsedRealtime() - leftAt > 30_000) locked = true
                 }
-                Lifecycle.Event.ON_STOP -> leftAt = SystemClock.elapsedRealtime()
+                Lifecycle.Event.ON_STOP -> { leftAt = SystemClock.elapsedRealtime(); resumed = false }
                 else -> {}
             }
         }
@@ -217,6 +232,7 @@ fun App(activity: MainActivity) {
         when {
             o == "review" -> { nav.tab(Route.Home); nav.go(Route.Review) }
             o == "budgets" -> { nav.tab(Route.More); nav.go(Route.Budgets) }
+            o.startsWith("join:") -> { nav.tab(Route.More); nav.go(Route.Groups(o.removePrefix("join:"))) }
             o.startsWith("spend:") -> o.removePrefix("spend:").toLongOrNull()?.let { nav.go(Route.Detail(it)) }
         }
         activity.openRequest.value = null
@@ -250,6 +266,8 @@ fun App(activity: MainActivity) {
                             Route.People -> PeopleScreen()
                             Route.Categories -> CategoriesScreen()
                             Route.Unread -> UnreadScreen()
+                            is Route.Groups -> GroupsScreen(r.joinCode)
+                            is Route.Group -> GroupScreen(r.id)
                         }
                     }
                     val showDock = nav.stack.size == 1 && !WindowInsets.isImeVisible
@@ -319,7 +337,7 @@ private fun LockScreen(unlock: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Text("🔒", fontSize = 48.sp)
         Spacer(Modifier.height(12.dp))
-        Text("Autolog is locked", style = Type.Title)
+        Text("Evenly is locked", style = Type.Title)
         Spacer(Modifier.height(24.dp))
         Box(Modifier.fillMaxWidth()) { GoldButton("Unlock", unlock) }
     }

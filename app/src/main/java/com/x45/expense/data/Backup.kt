@@ -37,17 +37,17 @@ object Backup {
 
     /**
      * Replaces the database with a backup. The current one is kept as before-restore.db first.
-     * Throws if the file isn't an Autolog backup.
+     * Throws if the file isn't an Evenly backup.
      */
     fun restore(ctx: Context, uri: Uri) {
         val tmp = File(ctx.cacheDir, "restore.db")
         ctx.contentResolver.openInputStream(uri)?.use { inp -> tmp.outputStream().use { inp.copyTo(it) } } ?: error("Couldn't open file")
         val head = tmp.inputStream().use { s -> ByteArray(16).also { s.read(it) } }
-        require(String(head, Charsets.US_ASCII).startsWith("SQLite format 3")) { "That isn't an Autolog backup file." }
+        require(String(head, Charsets.US_ASCII).startsWith("SQLite format 3")) { "That isn't an Evenly backup file." }
         val ok = android.database.sqlite.SQLiteDatabase.openDatabase(tmp.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { d ->
             d.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='txn'", null).use { it.moveToFirst() }
         }
-        require(ok) { "That isn't an Autolog backup file." }
+        require(ok) { "That isn't an Evenly backup file." }
         val db = Db.get(ctx)
         db.reopen()
         val live = ctx.getDatabasePath(Db.NAME)

@@ -24,6 +24,8 @@ sealed interface Route {
     data object People : Route
     data object Categories : Route
     data object Unread : Route
+    data class Groups(val joinCode: String? = null) : Route
+    data class Group(val id: String) : Route
 }
 
 val TABS = listOf(Route.Home, Route.Spends(), Route.Insights, Route.More)

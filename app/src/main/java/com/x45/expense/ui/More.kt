@@ -87,6 +87,14 @@ fun MoreScreen() {
     }
 
     Page("More", eyebrow = "Make it yours") {
+        item { SectionLabel("Together") }
+        item {
+            val signedIn = remember(v) { com.x45.expense.cloud.Cloud.signedIn(db) }
+            val groups = remember(v) { com.x45.expense.cloud.Cloud.groups(db).size }
+            Card(padding = 8.dp) {
+                SettingRow("Groups", if (signedIn) "${plural(groups, "group")} · split spends with friends" else "Split spends with friends. Bank texts stay here.", "👥", { nav.go(Route.Groups()) }) { Chevron() }
+            }
+        }
         item { SectionLabel("Money") }
         item {
             Card(padding = 8.dp) {
@@ -132,8 +140,8 @@ fun MoreScreen() {
                         thread { val n = Ingest.importInbox(ctx, 90); busy = false; toast.show(if (n > 0) "Found ${plural(n, "new spend")}" else "Nothing new") }
                     }
                 })
-                SettingRow("Export to spreadsheet", "CSV file for Excel / Sheets", "📤", { csv.launch("autolog-$stamp.csv") })
-                SettingRow("Back up", "Save everything to one file", "💾", { save.launch("autolog-backup-$stamp.db") })
+                SettingRow("Export to spreadsheet", "CSV file for Excel / Sheets", "📤", { csv.launch("evenly-$stamp.csv") })
+                SettingRow("Back up", "Save everything to one file", "💾", { save.launch("evenly-backup-$stamp.db") })
                 SettingRow("Restore a backup", "Replaces what's here now", "♻️", { restore.launch(arrayOf("*/*")) })
             }
         }

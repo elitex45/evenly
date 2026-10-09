@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +54,8 @@ fun ReviewScreen() {
     val toast = LocalToast.current
     val ctx = androidx.compose.ui.platform.LocalContext.current
     // Snapshot the queue so the list doesn't shift while you work through it.
-    val queue = remember { db.untagged().map { it.id } }
+    val queue = remember { db.untagged().map { it.id }.toMutableStateList() }
+    var sharing by remember { mutableStateOf<Txn?>(null) }
     var i by remember { mutableIntStateOf(0) }
     val cats = remember { db.categories() }
 
@@ -70,7 +72,7 @@ fun ReviewScreen() {
             if (idx >= queue.size) {
                 Done(remember { streak(db) }) { nav.back() }
             } else {
-                val t = remember(idx) { db.txn(queue[idx]) }
+                val t = remember(idx, queue[idx]) { db.txn(queue[idx]) }
                 if (t == null) {
                     Text("This spend was removed.", style = Type.Small)
                 } else {
@@ -88,6 +90,7 @@ fun ReviewScreen() {
                             i++
                         },
                         onSkip = { i++ },
+                        onShare = { sharing = t },
                         onHide = {
                             db.setKind(t.id, KIND_IGNORED)
                             toast.show("Hidden. It won't count.") { db.setKind(t.id, KIND_SPEND) }
@@ -98,10 +101,17 @@ fun ReviewScreen() {
             }
         }
     }
+    // After sharing, tag your own part right here (or move on if friends owe you all of it).
+    sharing?.let { t ->
+        ShareSheet(t) { shared ->
+            sharing = null
+            if (shared) db.children(t.id).firstOrNull()?.let { queue[i] = it.id } ?: i++
+        }
+    }
 }
 
 @Composable
-private fun ReviewCard(t: Txn, cats: List<Category>, db: Db, onTag: (String, Boolean) -> Unit, onSkip: () -> Unit, onHide: () -> Unit) {
+private fun ReviewCard(t: Txn, cats: List<Category>, db: Db, onTag: (String, Boolean) -> Unit, onSkip: () -> Unit, onHide: () -> Unit, onShare: () -> Unit) {
     var keep by remember(t.id) { mutableStateOf(false) }
     val suggested = remember(t.id) { db.categoriesFor(t.payeeRaw).toSet() }
     val ordered = cats.sortedByDescending { it.name in suggested }
@@ -146,6 +156,10 @@ private fun ReviewCard(t: Txn, cats: List<Category>, db: Db, onTag: (String, Boo
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             GhostButton("Skip", onSkip, Modifier.weight(1f))
             GhostButton("Not a spend", onHide, Modifier.weight(1f), color = Ink.Coral)
+        }
+        if (t.shareable && com.x45.expense.cloud.Cloud.signedIn(db)) {
+            Spacer(Modifier.height(10.dp))
+            GhostButton("👥  Share to a group", onShare, Modifier.fillMaxWidth(), color = Ink.Gold)
         }
     }
 }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.x45.expense"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -44,5 +44,9 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+    // V2 sign-in with Google (Credential Manager).
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     testImplementation("junit:junit:4.13.2")
 }

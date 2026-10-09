@@ -1,0 +1,26 @@
+# Local run: docker compose up -d --build   →  http://localhost:8790/health
+# DEV_LOGIN=1 turns on the test login. Never set it on a real server.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: autolog
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-autolog-local}
+      POSTGRES_DB: autolog
+    volumes: [autolog-db:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5544:5432"]   # only for tests on this Mac
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "autolog"]
+      interval: 2s
+      retries: 20
+  api:
+    build: .
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgres://autolog:${DB_PASSWORD:-autolog-local}@db:5432/autolog
+      PORT: "8790"
+      DEV_LOGIN: ${DEV_LOGIN:-0}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    ports: ["127.0.0.1:8790:8790"]   # this Mac only; the emulator reaches it as 10.0.2.2
+volumes:
+  autolog-db:

@@ -36,8 +36,14 @@ data class Txn(
     val parentId: Long? = null,
     val companyOverride: Boolean? = null, // set on this one spend; null = follow its account
     val company: Boolean = companyOverride ?: false, // what it really is (filled in when read)
+    val shareId: String? = null,   // I shared this spend to a group (cloud id)
+    val shareJson: String? = null, // what was sent: group, split
+    val via: String? = null,       // my part of a friend's shared spend: "Asha · Goa trip"
 ) {
     val manual get() = sender == MANUAL
+    val fromGroup get() = sender == GROUP
+    /** A spend I paid myself that can still be shared to a group. */
+    val shareable get() = !fromGroup && parentId == null && (kind == KIND_SPEND || shareId != null)
     val counted get() = kind == KIND_SPEND
 }
 
@@ -46,6 +52,8 @@ const val KIND_TRANSFER = "transfer"
 const val KIND_IGNORED = "ignored"
 const val KIND_PARENT = "parent"
 const val MANUAL = "manual"
+/** Sender of "my part of what a friend paid", pulled from a group. */
+const val GROUP = "group"
 
 /** Which spends a screen shows: everything, only personal, or only company (work cards). */
 const val BOOK_ALL = "all"
@@ -71,7 +79,7 @@ data class Category(val name: String, val emoji: String, val color: Long, val bu
 /** A bank account or card seen in your texts. Untracked ones (e.g. a shared/business card) are hidden from totals. */
 data class Account(val key: String, val bank: String?, val account: String?, val tracked: Boolean, val count: Int, val totalPaise: Long, val company: Boolean = false)
 
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 4) {
 
     /** Bumped on every write so screens can refresh. */
     private val _version = MutableStateFlow(0)
@@ -92,7 +100,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
         db.execSQL("CREATE TABLE contact(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, keywords TEXT NOT NULL, category TEXT)")
         listOf("Food", "Groceries", "Travel", "Fuel", "Shopping", "Bills", "Flowers", "Health", "Fun", "Rent", "Other")
             .forEachIndexed { i, c -> db.insert("category", null, ContentValues().apply { put("name", c); put("pos", i) }) }
-        onUpgrade(db, 1, 3)
+        onUpgrade(db, 1, 4)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -116,6 +124,14 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
             db.execSQL("ALTER TABLE account ADD COLUMN company INTEGER NOT NULL DEFAULT 0")
             db.execSQL("ALTER TABLE txn ADD COLUMN company INTEGER")
         }
+        if (oldVersion < 4) {
+            // V2 groups. Only the cloud ids and what was shared; the bank text never leaves the phone.
+            db.execSQL("ALTER TABLE txn ADD COLUMN share_id TEXT")
+            db.execSQL("ALTER TABLE txn ADD COLUMN share_json TEXT")
+            db.execSQL("ALTER TABLE txn ADD COLUMN via TEXT")
+            // Requests waiting for the internet, sent in order.
+            db.execSQL("CREATE TABLE outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, method TEXT NOT NULL, path TEXT NOT NULL, body TEXT, ts INTEGER NOT NULL)")
+        }
     }
 
     private fun changed() { _version.value++ }
@@ -134,11 +150,11 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
             // Same ref = same spend. Banks often send a second text (one with a ref, one without),
             // so same amount within 3 min also counts when either side has no ref.
             t.ref != null -> db.rawQuery(
-                "SELECT 1 FROM txn WHERE ref=? OR (ref IS NULL AND amount_paise=? AND ABS(ts-?)<180000 AND sender<>'manual') LIMIT 1",
+                "SELECT 1 FROM txn WHERE ref=? OR (ref IS NULL AND amount_paise=? AND ABS(ts-?)<180000 AND sender NOT IN ('manual','group')) LIMIT 1",
                 arrayOf(t.ref, t.amountPaise.toString(), t.ts.toString())
             ).use { it.moveToFirst() }
             else -> db.rawQuery(
-                "SELECT 1 FROM txn WHERE amount_paise=? AND ABS(ts-?)<180000 AND sender<>'manual' LIMIT 1",
+                "SELECT 1 FROM txn WHERE amount_paise=? AND ABS(ts-?)<180000 AND sender NOT IN ('manual','group') LIMIT 1",
                 arrayOf(t.amountPaise.toString(), t.ts.toString())
             ).use { it.moveToFirst() }
         }
@@ -158,6 +174,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
         put("category", category); put("note", note); put("sender", sender); put("body", body)
         put("kind", kind); put("parent_id", parentId)
         put("company", companyOverride?.let { if (it) 1 else 0 })
+        put("share_id", shareId); put("share_json", shareJson); put("via", via)
     }
 
     /** Saves edits to an existing spend (amount, payee, category, note, time, mode, kind). */
@@ -203,7 +220,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
         try {
             db.delete("txn", "parent_id=?", arrayOf(parent.id.toString()))
             parts.forEach { (amt, cat) ->
-                db.insert("txn", null, parent.copy(amountPaise = amt, category = cat, kind = KIND_SPEND, parentId = parent.id, ref = null).values())
+                db.insert("txn", null, parent.copy(amountPaise = amt, category = cat, kind = KIND_SPEND, parentId = parent.id, ref = null, shareId = null, shareJson = null).values())
             }
             db.update("txn", ContentValues().apply { put("kind", KIND_PARENT) }, "id=?", arrayOf(parent.id.toString()))
             db.setTransactionSuccessful()
@@ -217,6 +234,97 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
         val db = writableDatabase
         db.delete("txn", "parent_id=?", arrayOf(parentId.toString()))
         db.update("txn", ContentValues().apply { put("kind", KIND_SPEND) }, "id=?", arrayOf(parentId.toString()))
+        changed()
+    }
+
+    // ---------- groups (V2) ----------
+
+    /**
+     * I shared this spend: the full amount stays as a hidden "parent" and only my part counts
+     * (no part at all when friends owe me everything). Sharing again replaces the old split.
+     */
+    fun markShared(t: Txn, shareId: String, json: String, myPaise: Long, groupName: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("txn", "parent_id=?", arrayOf(t.id.toString()))
+            if (myPaise > 0) db.insert("txn", null, t.copy(
+                amountPaise = myPaise, kind = KIND_SPEND, parentId = t.id, ref = null, shareId = null, shareJson = null,
+                note = listOfNotNull("My part · $groupName", t.note).joinToString(" · "),
+            ).values())
+            db.update("txn", ContentValues().apply { put("kind", KIND_PARENT); put("share_id", shareId); put("share_json", json) }, "id=?", arrayOf(t.id.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changed()
+    }
+
+    /** Un-share: the full amount counts as mine again. */
+    fun markUnshared(t: Txn) {
+        val db = writableDatabase
+        db.delete("txn", "parent_id=?", arrayOf(t.id.toString()))
+        db.update("txn", ContentValues().apply { put("kind", KIND_SPEND); putNull("share_id"); putNull("share_json") }, "id=?", arrayOf(t.id.toString()))
+        changed()
+    }
+
+    /** My part of a friend's shared spend, as it is on the server now. */
+    data class FriendPart(val shareId: String, val title: String, val payer: String, val group: String, val spentAt: Long, val totalPaise: Long, val myPaise: Long, val note: String?)
+
+    /**
+     * Makes my "via Ravi" spends match the server: add new ones, update changed ones, remove un-shared ones.
+     * Category, my own note and "not a spend" stay as I set them. Returns how many are new.
+     */
+    fun syncFriendParts(parts: List<FriendPart>): Int {
+        val db = writableDatabase
+        var added = 0
+        db.beginTransaction()
+        try {
+            val have = db.rawQuery("SELECT id, ref FROM txn WHERE sender='group'", null).use { c ->
+                buildMap { while (c.moveToNext()) put(c.getString(1), c.getLong(0)) }
+            }
+            parts.forEach { p ->
+                val ref = "share:${p.shareId}"
+                val payer = p.payer.trim().substringBefore(' ')  // "via Asha", like friends say it
+                val body = "$payer paid ${com.x45.expense.ui.rupees(p.totalPaise)} in ${p.group}. Your part ${com.x45.expense.ui.rupees(p.myPaise)}." + (p.note?.let { " \"$it\"" } ?: "")
+                val cv = ContentValues().apply {
+                    put("amount_paise", p.myPaise); put("payee", p.title); put("ts", p.spentAt); put("body", body); put("via", "$payer · ${p.group}")
+                }
+                val id = have[ref]
+                if (id != null) db.update("txn", cv, "id=?", arrayOf(id.toString()))
+                else {
+                    cv.put("ref", ref); cv.put("mode", "Group"); cv.put("sender", GROUP); cv.put("kind", KIND_SPEND)
+                    db.insert("txn", null, cv); added++
+                }
+            }
+            val keep = parts.map { "share:${it.shareId}" }.toSet()
+            have.filterKeys { it !in keep }.values.forEach { db.delete("txn", "id=?", arrayOf(it.toString())) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changed()
+        return added
+    }
+
+    /** Spends that look like paying a friend back: recent, counted, mine, not shared. */
+    fun recentOwnSpends(since: Long): List<Txn> =
+        query("SELECT * FROM txn WHERE ts>=? AND kind='spend' AND sender<>'group' AND parent_id IS NULL ORDER BY ts DESC", since.toString())
+
+    data class OutItem(val id: Long, val method: String, val path: String, val body: String?)
+
+    fun enqueue(method: String, path: String, body: String?) {
+        writableDatabase.insert("outbox", null, ContentValues().apply { put("method", method); put("path", path); put("body", body); put("ts", System.currentTimeMillis()) })
+        changed()
+    }
+
+    fun outbox(): List<OutItem> =
+        readableDatabase.rawQuery("SELECT id, method, path, body FROM outbox ORDER BY id", null).use { c ->
+            buildList { while (c.moveToNext()) add(OutItem(c.getLong(0), c.getString(1), c.getString(2), if (c.isNull(3)) null else c.getString(3))) }
+        }
+
+    fun dequeue(id: Long) {
+        writableDatabase.delete("outbox", "id=?", arrayOf(id.toString()))
         changed()
     }
 
@@ -288,6 +396,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, NAME, null, 3
         kind = getString(getColumnIndexOrThrow("kind")), parentId = getColumnIndexOrThrow("parent_id").let { if (isNull(it)) null else getLong(it) },
         companyOverride = getColumnIndexOrThrow("company").let { if (isNull(it)) null else getInt(it) == 1 },
         company = getInt(getColumnIndexOrThrow("eff_company")) == 1,
+        shareId = str("share_id"), shareJson = str("share_json"), via = str("via"),
     )
 
     private fun Cursor.str(col: String): String? = getColumnIndexOrThrow(col).let { if (isNull(it)) null else getString(it) }

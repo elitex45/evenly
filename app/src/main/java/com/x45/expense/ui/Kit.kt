@@ -263,7 +263,7 @@ fun Category?.tint(): Color = this?.let { Color(it.color) } ?: Ink.Gold
 
 @Composable
 fun CatIcon(c: Category?, size: Dp = 42.dp, kind: String? = null) {
-    val muted = kind == KIND_TRANSFER || kind == KIND_IGNORED || kind == KIND_PARENT
+    val muted = kind == KIND_TRANSFER || kind == KIND_IGNORED || kind == KIND_PARENT || kind == KIND_SHARED
     val color = if (muted) Ink.Muted else c.tint()
     Box(
         Modifier.size(size).clip(CircleShape).background(color.copy(alpha = 0.15f)).border(1.dp, color.copy(alpha = 0.25f), CircleShape),
@@ -274,12 +274,16 @@ fun CatIcon(c: Category?, size: Dp = 42.dp, kind: String? = null) {
                 kind == KIND_TRANSFER -> "⇄"
                 kind == KIND_IGNORED -> "—"
                 kind == KIND_PARENT -> "✂"
+                kind == KIND_SHARED -> "👥"
                 else -> c?.emoji ?: "?"
             },
             fontSize = (size.value * 0.42f).sp, color = color, textAlign = TextAlign.Center,
         )
     }
 }
+
+/** Only for the icon: a shared spend (stored as a parent). */
+private const val KIND_SHARED = "shared"
 
 fun kindLabel(kind: String) = when (kind) {
     KIND_TRANSFER -> "TRANSFER"
@@ -291,14 +295,14 @@ fun kindLabel(kind: String) = when (kind) {
 @Composable
 fun TxnRow(t: Txn, cat: Category?, onClick: () -> Unit, showDay: Boolean = false) {
     Row(Modifier.fillMaxWidth().tap(onClick = onClick).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        CatIcon(cat, kind = t.kind)
+        if (t.shareId != null && t.kind == KIND_PARENT) CatIcon(cat, kind = KIND_SHARED) else CatIcon(cat, kind = t.kind)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(t.payee ?: "Unknown payee", style = Type.Body.copy(fontWeight = FontWeight(700)), maxLines = 1, overflow = TextOverflow.Ellipsis)
             val sub = listOfNotNull(
                 if (showDay) dayLabel(t.ts) else timeOf(t.ts),
                 t.category ?: if (t.counted) "Untagged" else null,
-                t.place?.substringBefore(",") ?: if (t.manual) t.mode.takeIf { it != "Other" } ?: "Cash" else t.bank,
+                t.place?.substringBefore(",") ?: if (t.manual) t.mode.takeIf { it != "Other" } ?: "Cash" else if (t.fromGroup) "via " + (t.via?.substringBefore(" ·") ?: "group") else t.bank,
             ).joinToString(" · ")
             Text(sub, style = Type.Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -312,7 +316,7 @@ fun TxnRow(t: Txn, cat: Category?, onClick: () -> Unit, showDay: Boolean = false
                 ),
             )
             when {
-                !t.counted -> Text(kindLabel(t.kind) ?: "", style = Type.Label.copy(fontSize = 9.sp))
+                !t.counted -> Text((if (t.shareId != null && t.kind == KIND_PARENT) "SHARED" else kindLabel(t.kind)) ?: "", style = Type.Label.copy(fontSize = 9.sp))
                 t.category == null -> Text("TAP TO TAG", style = Type.Label.copy(fontSize = 9.sp, color = Ink.Gold))
             }
         }

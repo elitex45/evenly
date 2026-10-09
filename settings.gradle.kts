@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "Autolog"
+rootProject.name = "Evenly"
 include(":app")

@@ -8,3 +8,5 @@ sms-export/
 *.apk
 .kotlin/
 .DS_Store
+node_modules/
+server/.gradle/

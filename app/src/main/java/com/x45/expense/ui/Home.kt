@@ -14,7 +14,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +56,7 @@ fun HomeScreen(importing: Boolean) {
     val cal = Calendar.getInstance()
     val dom = cal.get(Calendar.DAY_OF_MONTH)
     val dim = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+    var sharing by remember { mutableStateOf<com.x45.expense.data.Txn?>(null) }
 
     Page(title = greeting(), eyebrow = dayOf(System.currentTimeMillis()), trailing = {
         RoundIcon(Icons.Default.Search, "Search", { nav.tab(Route.Spends()) })
@@ -124,6 +128,8 @@ fun HomeScreen(importing: Boolean) {
             }
         }
 
+        item { PaybackCard() }
+
         if (importing) item { Text("Reading your past bank texts…", style = Type.Small.copy(color = Ink.Gold)) }
 
         if (unread > 0) item {
@@ -144,7 +150,7 @@ fun HomeScreen(importing: Boolean) {
         } else {
             item {
                 Card(padding = 12.dp) {
-                    today.forEach { t -> TxnRow(t, cats[t.category], { nav.go(Route.Detail(t.id)) }) }
+                    today.forEach { t -> ShareSwipe(t, { sharing = it }) { TxnRow(t, cats[t.category], { nav.go(Route.Detail(t.id)) }) } }
                 }
             }
         }
@@ -183,6 +189,7 @@ fun HomeScreen(importing: Boolean) {
             }
         }
     }
+    sharing?.let { t -> ShareSheet(t) { sharing = null } }
 }
 
 @Composable

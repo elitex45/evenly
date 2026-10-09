@@ -69,6 +69,7 @@ fun SpendsScreen(initialCategory: String?) {
                 rupees(t.amountPaise).replace(",", "").contains(q))
     }
     val hiddenCount = all.count { it.kind != KIND_SPEND }
+    var sharing by remember { mutableStateOf<Txn?>(null) }
 
     Page("Spends", eyebrow = plural(shown.count { it.counted }, "spend") + " · " + rupees(Stats.total(shown.filter { it.counted }))) {
         item {
@@ -111,10 +112,11 @@ fun SpendsScreen(initialCategory: String?) {
                 }
             }
             item(key = "l$day") {
-                Card(padding = 12.dp) { list.forEach { t -> TxnRow(t, byName[t.category], { nav.go(Route.Detail(t.id)) }) } }
+                Card(padding = 12.dp) { list.forEach { t -> ShareSwipe(t, { sharing = it }) { TxnRow(t, byName[t.category], { nav.go(Route.Detail(t.id)) }) } } }
             }
         }
     }
+    sharing?.let { t -> ShareSheet(t) { sharing = null } }
 }
 
 /** One spend: change category, note, split, hide, see the original text and the map. */
@@ -129,6 +131,7 @@ fun DetailScreen(id: Long) {
     var note by remember(id) { mutableStateOf(t?.note ?: "") }
     var splitting by remember { mutableStateOf(false) }
     var showSms by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
 
     if (t == null) {
         Page("Spend", onBack = { nav.back() }) { item { Empty("🫥", "Gone", "This spend was deleted.") } }
@@ -151,6 +154,7 @@ fun DetailScreen(id: Long) {
                 }
             }
         }
+        if (t.shareId != null || t.fromGroup) item { SharedInfo(t) }
         if (t.kind == KIND_SPEND) {
             item { SectionLabel("Category") }
             item {
@@ -179,7 +183,7 @@ fun DetailScreen(id: Long) {
         }
         if (parent != null) item {
             Card(onClick = { nav.go(Route.Detail(parent.id)) }) {
-                Text("Part of a split ${rupees(parent.amountPaise)} payment", style = Type.Body)
+                Text(if (parent.shareId != null) "Your part of a shared ${rupees(parent.amountPaise)} payment" else "Part of a split ${rupees(parent.amountPaise)} payment", style = Type.Body)
                 Text("Open the original →", style = Type.Small.copy(color = Ink.Gold))
             }
         }
@@ -197,11 +201,12 @@ fun DetailScreen(id: Long) {
         item { SectionLabel("Details") }
         item {
             Card {
-                InfoRow("Paid with", listOfNotNull(t.mode, t.bank, t.account?.let { "••$it" }).joinToString(" · ").ifBlank { "—" })
+                if (t.fromGroup) InfoRow("Paid by", t.via ?: "A friend")
+                else InfoRow("Paid with", listOfNotNull(t.mode, t.bank, t.account?.let { "••$it" }).joinToString(" · ").ifBlank { "—" })
                 if (t.payeeRaw != null && t.payeeRaw != t.payee) InfoRow("Text said", t.payeeRaw)
                 if (t.ref != null) InfoRow("Reference", t.ref)
-                InfoRow("Source", if (t.manual) "Added by you" else "Bank text from ${t.sender}")
-                if (!t.manual) {
+                InfoRow("Source", if (t.manual) "Added by you" else if (t.fromGroup) "Shared in a group" else "Bank text from ${t.sender}")
+                if (!t.manual && !t.fromGroup) {
                     Text(if (showSms) "Hide original text" else "Show original text", style = Type.Small.copy(color = Ink.Gold, fontWeight = FontWeight(700)),
                         modifier = Modifier.tap { showSms = !showSms }.padding(top = 8.dp))
                     if (showSms) Text(t.body, style = Type.Small.copy(fontSize = 12.sp), modifier = Modifier.padding(top = 6.dp))
@@ -214,8 +219,9 @@ fun DetailScreen(id: Long) {
             Card(padding = 8.dp) {
                 when (t.kind) {
                     KIND_SPEND -> {
-                        if (t.parentId == null) SettingRow("Split this payment", "Paid for friends too? Count only your part.", "✂️", { splitting = true })
-                        SettingRow("It's a transfer to myself", "Card bill, own account. Won't count.", "⇄", {
+                        if (t.shareable) SettingRow("Share to a group", "Friends owe you their part. Or swipe it right.", "👥", { sharing = true })
+                        if (t.parentId == null && !t.fromGroup) SettingRow("Split this payment", "Paid for friends too? Count only your part.", "✂️", { splitting = true })
+                        if (!t.fromGroup) SettingRow("It's a transfer to myself", "Card bill, own account. Won't count.", "⇄", {
                             db.setKind(t.id, KIND_TRANSFER); toast.show("Marked as transfer") { db.setKind(t.id, KIND_SPEND) }
                         })
                         if (t.manual) {
@@ -229,13 +235,15 @@ fun DetailScreen(id: Long) {
                             })
                         }
                     }
-                    KIND_PARENT -> SettingRow("Undo split", "Count the full amount again", "↩️", { db.unsplit(t.id); toast.show("Split removed") })
+                    KIND_PARENT -> if (t.shareId != null) SettingRow("Change the split", "Who was there, who owes what", "👥", { sharing = true })
+                        else SettingRow("Undo split", "Count the full amount again", "↩️", { db.unsplit(t.id); toast.show("Split removed") })
                     else -> SettingRow("Count this as a spend", "Bring it back into your totals", "↩️", { db.setKind(t.id, KIND_SPEND); toast.show("Restored") })
                 }
             }
         }
     }
 
+    if (sharing) ShareSheet(t) { sharing = false }
     if (splitting) SplitSheet(t, cats, { splitting = false }) { parts ->
         db.split(t, parts); splitting = false; toast.show("Split into ${parts.size} parts")
     }
@@ -244,7 +252,7 @@ fun DetailScreen(id: Long) {
 private fun kindExplain(t: Txn) = when (t.kind) {
     KIND_TRANSFER -> "Transfer: money moved to yourself (like a card bill). Not counted."
     KIND_IGNORED -> "Hidden: not counted in your totals."
-    KIND_PARENT -> "Split: only the parts below are counted."
+    KIND_PARENT -> if (t.shareId != null) "Shared: only your part counts." else "Split: only the parts below are counted."
     else -> null
 }
 
